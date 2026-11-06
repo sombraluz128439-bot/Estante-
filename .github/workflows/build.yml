@@ -1,0 +1,77 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Localizar o projeto (extrai o .zip se precisar)
+        id: proj
+        run: |
+          PKG=$(find . -maxdepth 3 -name package.json -not -path '*/node_modules/*' | head -n 1)
+          if [ -z "$PKG" ]; then
+            ZIP=$(find . -maxdepth 3 -iname '*.zip' -not -path './.git/*' | head -n 1)
+            if [ -n "$ZIP" ]; then
+              echo "Extraindo $ZIP"
+              mkdir -p _app
+              unzip -q -o "$ZIP" -d _app
+              PKG=$(find _app -maxdepth 3 -name package.json -not -path '*/node_modules/*' | head -n 1)
+            fi
+          fi
+          if [ -z "$PKG" ]; then
+            echo "::error::Nao achei package.json nem um .zip com o projeto. Suba o minhas-alas.zip para o repositorio."
+            echo "Arquivos encontrados no repositorio:"
+            find . -not -path './.git/*' -not -name .git | head -50
+            exit 1
+          fi
+          DIR=$(dirname "$PKG")
+          echo "Projeto encontrado em: $DIR"
+          if [ ! -f "$DIR/www/index.html" ]; then
+            echo "::error::Falta www/index.html dentro de $DIR"
+            exit 1
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Instalar dependências
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: npm install
+
+      - name: Criar projeto Android
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: npx cap add android
+
+      - name: Permitir gravar áudio
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          sed -i 's#</manifest>#<uses-permission android:name="android.permission.RECORD_AUDIO"/><uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/></manifest>#' android/app/src/main/AndroidManifest.xml
+
+      - name: Copiar o app para o Android
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: npx cap sync android
+
+      - name: Gerar o APK
+        working-directory: ${{ steps.proj.outputs.dir }}/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Guardar o APK para baixar
+        uses: actions/upload-artifact@v4
+        with:
+          name: minhas-alas-apk
+          path: ${{ steps.proj.outputs.dir }}/android/app/build/outputs/apk/debug/app-debug.apk
